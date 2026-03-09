@@ -6,26 +6,30 @@
 
 // Production Claude agent execution with retry, git checkpoints, and audit logging
 
-import { fs, path } from 'zx';
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { fs, path } from "zx";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 
-import { isRetryableError, PentestError } from '../services/error-handling.js';
-import { isSpendingCapBehavior } from '../utils/billing-detection.js';
-import { Timer } from '../utils/metrics.js';
-import { formatTimestamp } from '../utils/formatting.js';
-import { AGENT_VALIDATORS, MCP_AGENT_MAPPING } from '../session-manager.js';
-import { AuditSession } from '../audit/index.js';
-import { createShannonHelperServer } from '../../mcp-server/dist/index.js';
-import { AGENTS } from '../session-manager.js';
-import type { AgentName } from '../types/index.js';
+import { isRetryableError, PentestError } from "../services/error-handling.js";
+import { isSpendingCapBehavior } from "../utils/billing-detection.js";
+import { Timer } from "../utils/metrics.js";
+import { formatTimestamp } from "../utils/formatting.js";
+import { AGENT_VALIDATORS, MCP_AGENT_MAPPING } from "../session-manager.js";
+import { AuditSession } from "../audit/index.js";
+import { createShannonHelperServer } from "../../mcp-server/dist/index.js";
+import { AGENTS } from "../session-manager.js";
+import type { AgentName } from "../types/index.js";
 
-import { dispatchMessage } from './message-handlers.js';
-import { detectExecutionContext, formatErrorOutput, formatCompletionMessage } from './output-formatters.js';
-import { createProgressManager } from './progress-manager.js';
-import { createAuditLogger } from './audit-logger.js';
-import { getActualModelName } from './router-utils.js';
-import { resolveModel, type ModelTier } from './models.js';
-import type { ActivityLogger } from '../types/activity-logger.js';
+import { dispatchMessage } from "./message-handlers.js";
+import {
+  detectExecutionContext,
+  formatErrorOutput,
+  formatCompletionMessage,
+} from "./output-formatters.js";
+import { createProgressManager } from "./progress-manager.js";
+import { createAuditLogger } from "./audit-logger.js";
+import { getActualModelName } from "./router-utils.js";
+import { resolveModel, type ModelTier } from "./models.js";
+import type { ActivityLogger } from "../types/activity-logger.js";
 
 declare global {
   var SHANNON_DISABLE_LOADER: boolean | undefined;
@@ -47,7 +51,7 @@ export interface ClaudePromptResult {
 }
 
 interface StdioMcpServer {
-  type: 'stdio';
+  type: "stdio";
   command: string;
   args: string[];
   env: Record<string, string>;
@@ -59,19 +63,21 @@ type McpServer = ReturnType<typeof createShannonHelperServer> | StdioMcpServer;
 function buildMcpServers(
   sourceDir: string,
   agentName: string | null,
-  logger: ActivityLogger
+  logger: ActivityLogger,
 ): Record<string, McpServer> {
   // 1. Create the shannon-helper server (always present)
   const shannonHelperServer = createShannonHelperServer(sourceDir);
 
   const mcpServers: Record<string, McpServer> = {
-    'shannon-helper': shannonHelperServer,
+    "shannon-helper": shannonHelperServer,
   };
 
   // 2. Look up the agent's Playwright MCP mapping
   if (agentName) {
     const promptTemplate = AGENTS[agentName as AgentName].promptTemplate;
-    const playwrightMcpName = MCP_AGENT_MAPPING[promptTemplate as keyof typeof MCP_AGENT_MAPPING] || null;
+    const playwrightMcpName =
+      MCP_AGENT_MAPPING[promptTemplate as keyof typeof MCP_AGENT_MAPPING] ||
+      null;
 
     if (playwrightMcpName) {
       logger.info(`Assigned ${agentName} -> ${playwrightMcpName}`);
@@ -79,46 +85,31 @@ function buildMcpServers(
       const userDataDir = `/tmp/${playwrightMcpName}`;
 
       // 3. Configure Playwright MCP args with Docker/local browser handling
-      const isDocker = process.env.SHANNON_DOCKER === 'true';
+      const isDocker = process.env.SHANNON_DOCKER === "true";
 
       const mcpArgs: string[] = [
-        '@playwright/mcp@0.0.68',
-        '--isolated',
-        '--user-data-dir', userDataDir,
+        "@playwright/mcp@latest",
+        "--isolated",
+        "--user-data-dir",
+        userDataDir,
       ];
 
       if (isDocker) {
-        mcpArgs.push('--executable-path', '/usr/bin/chromium-browser');
-        mcpArgs.push('--browser', 'chromium');
+        mcpArgs.push("--executable-path", "/usr/bin/chromium-browser");
+        mcpArgs.push("--browser", "chromium");
       }
 
-      // NOTE: Explicit allowlist — the Playwright MCP subprocess must not inherit
-      // secrets (API keys, AWS tokens) from the parent process.
-      const MCP_ENV_ALLOWLIST = [
-        'PATH', 'HOME', 'NODE_PATH', 'DISPLAY',
-        'PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH',
-      ] as const;
-
-      const envVars: Record<string, string> = {
-        PLAYWRIGHT_HEADLESS: 'true',
-        ...(isDocker && { PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }),
-      };
-
-      for (const key of MCP_ENV_ALLOWLIST) {
-        if (process.env[key]) {
-          envVars[key] = process.env[key]!;
-        }
-      }
-
-      for (const [key, value] of Object.entries(process.env)) {
-        if (key.startsWith('XDG_') && value !== undefined) {
-          envVars[key] = value;
-        }
-      }
+      const envVars: Record<string, string> = Object.fromEntries(
+        Object.entries({
+          ...process.env,
+          PLAYWRIGHT_HEADLESS: "true",
+          ...(isDocker && { PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1" }),
+        }).filter((entry): entry is [string, string] => entry[1] !== undefined),
+      );
 
       mcpServers[playwrightMcpName] = {
-        type: 'stdio' as const,
-        command: 'npx',
+        type: "stdio" as const,
+        command: "npx",
         args: mcpArgs,
         env: envVars,
       };
@@ -139,28 +130,28 @@ async function writeErrorLog(
   err: Error & { code?: string; status?: number },
   sourceDir: string,
   fullPrompt: string,
-  duration: number
+  duration: number,
 ): Promise<void> {
   try {
     const errorLog = {
       timestamp: formatTimestamp(),
-      agent: 'claude-executor',
+      agent: "claude-executor",
       error: {
         name: err.constructor.name,
         message: err.message,
         code: err.code,
         status: err.status,
-        stack: err.stack
+        stack: err.stack,
       },
       context: {
         sourceDir,
-        prompt: fullPrompt.slice(0, 200) + '...',
-        retryable: isRetryableError(err)
+        prompt: fullPrompt.slice(0, 200) + "...",
+        retryable: isRetryableError(err),
       },
-      duration
+      duration,
     };
-    const logPath = path.join(sourceDir, 'error.log');
-    await fs.appendFile(logPath, JSON.stringify(errorLog) + '\n');
+    const logPath = path.join(sourceDir, "error.log");
+    await fs.appendFile(logPath, JSON.stringify(errorLog) + "\n");
   } catch {
     // Best-effort error log writing - don't propagate failures
   }
@@ -170,23 +161,27 @@ export async function validateAgentOutput(
   result: ClaudePromptResult,
   agentName: string | null,
   sourceDir: string,
-  logger: ActivityLogger
+  logger: ActivityLogger,
 ): Promise<boolean> {
   logger.info(`Validating ${agentName} agent output`);
 
   try {
     // Check if agent completed successfully
     if (!result.success || !result.result) {
-      logger.error('Validation failed: Agent execution was unsuccessful');
+      logger.error("Validation failed: Agent execution was unsuccessful");
       return false;
     }
 
     // Get validator function for this agent
-    const validator = agentName ? AGENT_VALIDATORS[agentName as keyof typeof AGENT_VALIDATORS] : undefined;
+    const validator = agentName
+      ? AGENT_VALIDATORS[agentName as keyof typeof AGENT_VALIDATORS]
+      : undefined;
 
     if (!validator) {
-      logger.warn(`No validator found for agent "${agentName}" - assuming success`);
-      logger.info('Validation passed: Unknown agent with successful result');
+      logger.warn(
+        `No validator found for agent "${agentName}" - assuming success`,
+      );
+      logger.info("Validation passed: Unknown agent with successful result");
       return true;
     }
 
@@ -196,13 +191,12 @@ export async function validateAgentOutput(
     const validationResult = await validator(sourceDir, logger);
 
     if (validationResult) {
-      logger.info('Validation passed: Required files/structure present');
+      logger.info("Validation passed: Required files/structure present");
     } else {
-      logger.error('Validation failed: Missing required deliverable files');
+      logger.error("Validation failed: Missing required deliverable files");
     }
 
     return validationResult;
-
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     logger.error(`Validation failed with error: ${errMsg}`);
@@ -215,22 +209,24 @@ export async function validateAgentOutput(
 export async function runClaudePrompt(
   prompt: string,
   sourceDir: string,
-  context: string = '',
-  description: string = 'Claude analysis',
+  context: string = "",
+  description: string = "Claude analysis",
   agentName: string | null = null,
   auditSession: AuditSession | null = null,
   logger: ActivityLogger,
-  modelTier: ModelTier = 'medium'
+  modelTier: ModelTier = "medium",
 ): Promise<ClaudePromptResult> {
   // 1. Initialize timing and prompt
-  const timer = new Timer(`agent-${description.toLowerCase().replace(/\s+/g, '-')}`);
+  const timer = new Timer(
+    `agent-${description.toLowerCase().replace(/\s+/g, "-")}`,
+  );
   const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
 
   // 2. Set up progress and audit infrastructure
   const execContext = detectExecutionContext(description);
   const progress = createProgressManager(
     { description, useCleanOutput: execContext.useCleanOutput },
-    global.SHANNON_DISABLE_LOADER ?? false
+    global.SHANNON_DISABLE_LOADER ?? false,
   );
   const auditLogger = createAuditLogger(auditSession);
 
@@ -241,23 +237,38 @@ export async function runClaudePrompt(
 
   // 4. Build env vars to pass to SDK subprocesses
   const sdkEnv: Record<string, string> = {
-    CLAUDE_CODE_MAX_OUTPUT_TOKENS: process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '64000',
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS:
+      process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || "64000",
   };
+
+  // Azure AI Foundry: route via ANTHROPIC_BASE_URL using the Anthropic-compatible endpoint.
+  // The SDK appends /v1/messages, so the base is the path up to (not including) /v1.
+  if (
+    process.env.CLAUDE_CODE_USE_AZURE === "1" &&
+    process.env.AZURE_AI_FOUNDRY_ENDPOINT
+  ) {
+    sdkEnv["ANTHROPIC_BASE_URL"] = process.env.AZURE_AI_FOUNDRY_ENDPOINT;
+    sdkEnv["ANTHROPIC_API_KEY"] = process.env.AZURE_AI_FOUNDRY_API_KEY ?? "";
+  }
+
   const passthroughVars = [
-    'ANTHROPIC_API_KEY',
-    'CLAUDE_CODE_OAUTH_TOKEN',
-    'ANTHROPIC_BASE_URL',
-    'ANTHROPIC_AUTH_TOKEN',
-    'CLAUDE_CODE_USE_BEDROCK',
-    'AWS_REGION',
-    'AWS_BEARER_TOKEN_BEDROCK',
-    'CLAUDE_CODE_USE_VERTEX',
-    'CLOUD_ML_REGION',
-    'ANTHROPIC_VERTEX_PROJECT_ID',
-    'GOOGLE_APPLICATION_CREDENTIALS',
-    'ANTHROPIC_SMALL_MODEL',
-    'ANTHROPIC_MEDIUM_MODEL',
-    'ANTHROPIC_LARGE_MODEL',
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "AWS_REGION",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLOUD_ML_REGION",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "CLAUDE_CODE_USE_AZURE",
+    "AZURE_AI_FOUNDRY_ENDPOINT",
+    "AZURE_AI_FOUNDRY_API_KEY",
+    "ANTHROPIC_SMALL_MODEL",
+    "ANTHROPIC_MEDIUM_MODEL",
+    "ANTHROPIC_LARGE_MODEL",
   ];
   for (const name of passthroughVars) {
     if (process.env[name]) {
@@ -270,14 +281,16 @@ export async function runClaudePrompt(
     model: resolveModel(modelTier),
     maxTurns: 10_000,
     cwd: sourceDir,
-    permissionMode: 'bypassPermissions' as const,
+    permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true,
     mcpServers,
     env: sdkEnv,
   };
 
   if (!execContext.useCleanOutput) {
-    logger.info(`SDK Options: maxTurns=${options.maxTurns}, cwd=${sourceDir}, permissions=BYPASS`);
+    logger.info(
+      `SDK Options: maxTurns=${options.maxTurns}, cwd=${sourceDir}, permissions=BYPASS`,
+    );
   }
 
   let turnCount = 0;
@@ -293,7 +306,7 @@ export async function runClaudePrompt(
       fullPrompt,
       options,
       { execContext, description, progress, auditLogger, logger },
-      timer
+      timer,
     );
 
     turnCount = messageLoopResult.turnCount;
@@ -305,11 +318,11 @@ export async function runClaudePrompt(
     // === SPENDING CAP SAFEGUARD ===
     // 7. Defense-in-depth: Detect spending cap that slipped through detectApiError().
     // Uses consolidated billing detection from utils/billing-detection.ts
-    if (isSpendingCapBehavior(turnCount, totalCost, result || '')) {
+    if (isSpendingCapBehavior(turnCount, totalCost, result || "")) {
       throw new PentestError(
         `Spending cap likely reached (turns=${turnCount}, cost=$0): ${result?.slice(0, 100)}`,
-        'billing',
-        true // Retryable - Temporal will use 5-30 min backoff
+        "billing",
+        true, // Retryable - Temporal will use 5-30 min backoff
       );
     }
 
@@ -317,10 +330,14 @@ export async function runClaudePrompt(
     const duration = timer.stop();
 
     if (apiErrorDetected) {
-      logger.warn(`API Error detected in ${description} - will validate deliverables before failing`);
+      logger.warn(
+        `API Error detected in ${description} - will validate deliverables before failing`,
+      );
     }
 
-    progress.finish(formatCompletionMessage(execContext, description, turnCount, duration));
+    progress.finish(
+      formatCompletionMessage(execContext, description, turnCount, duration),
+    );
 
     return {
       result,
@@ -330,9 +347,8 @@ export async function runClaudePrompt(
       cost: totalCost,
       model,
       partialCost: totalCost,
-      apiErrorDetected
+      apiErrorDetected,
     };
-
   } catch (error) {
     // 9. Handle errors — log, write error file, return failure
     const duration = timer.stop();
@@ -341,21 +357,29 @@ export async function runClaudePrompt(
 
     await auditLogger.logError(err, duration, turnCount);
     progress.stop();
-    outputLines(formatErrorOutput(err, execContext, description, duration, sourceDir, isRetryableError(err)));
+    outputLines(
+      formatErrorOutput(
+        err,
+        execContext,
+        description,
+        duration,
+        sourceDir,
+        isRetryableError(err),
+      ),
+    );
     await writeErrorLog(err, sourceDir, fullPrompt, duration);
 
     return {
       error: err.message,
       errorType: err.constructor.name,
-      prompt: fullPrompt.slice(0, 100) + '...',
+      prompt: fullPrompt.slice(0, 100) + "...",
       success: false,
       duration,
       cost: totalCost,
-      retryable: isRetryableError(err)
+      retryable: isRetryableError(err),
     };
   }
 }
-
 
 interface MessageLoopResult {
   turnCount: number;
@@ -375,9 +399,9 @@ interface MessageLoopDeps {
 
 async function processMessageStream(
   fullPrompt: string,
-  options: NonNullable<Parameters<typeof query>[0]['options']>,
+  options: NonNullable<Parameters<typeof query>[0]["options"]>,
   deps: MessageLoopDeps,
-  timer: Timer
+  timer: Timer,
 ): Promise<MessageLoopResult> {
   const { execContext, description, progress, auditLogger, logger } = deps;
   const HEARTBEAT_INTERVAL = 30000;
@@ -392,33 +416,38 @@ async function processMessageStream(
   for await (const message of query({ prompt: fullPrompt, options })) {
     // Heartbeat logging when loader is disabled
     const now = Date.now();
-    if (global.SHANNON_DISABLE_LOADER && now - lastHeartbeat > HEARTBEAT_INTERVAL) {
-      logger.info(`[${Math.floor((now - timer.startTime) / 1000)}s] ${description} running... (Turn ${turnCount})`);
+    if (
+      global.SHANNON_DISABLE_LOADER &&
+      now - lastHeartbeat > HEARTBEAT_INTERVAL
+    ) {
+      logger.info(
+        `[${Math.floor((now - timer.startTime) / 1000)}s] ${description} running... (Turn ${turnCount})`,
+      );
       lastHeartbeat = now;
     }
 
     // Increment turn count for assistant messages
-    if (message.type === 'assistant') {
+    if (message.type === "assistant") {
       turnCount++;
     }
 
     const dispatchResult = await dispatchMessage(
       message as { type: string; subtype?: string },
       turnCount,
-      { execContext, description, progress, auditLogger, logger }
+      { execContext, description, progress, auditLogger, logger },
     );
 
-    if (dispatchResult.type === 'throw') {
+    if (dispatchResult.type === "throw") {
       throw dispatchResult.error;
     }
 
-    if (dispatchResult.type === 'complete') {
+    if (dispatchResult.type === "complete") {
       result = dispatchResult.result;
       cost = dispatchResult.cost;
       break;
     }
 
-    if (dispatchResult.type === 'continue') {
+    if (dispatchResult.type === "continue") {
       if (dispatchResult.apiErrorDetected) {
         apiErrorDetected = true;
       }

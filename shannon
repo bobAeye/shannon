@@ -156,6 +156,18 @@ cmd_start() {
         echo "ERROR: Bedrock mode requires the following env vars in .env:$MISSING"
         exit 1
       fi
+    elif [ "$CLAUDE_CODE_USE_AZURE" = "1" ]; then
+      # Azure AI Foundry mode — validate required Azure credentials
+      MISSING=""
+      [ -z "$AZURE_AI_FOUNDRY_ENDPOINT" ] && MISSING="$MISSING AZURE_AI_FOUNDRY_ENDPOINT"
+      [ -z "$AZURE_AI_FOUNDRY_API_KEY" ] && MISSING="$MISSING AZURE_AI_FOUNDRY_API_KEY"
+      [ -z "$ANTHROPIC_SMALL_MODEL" ] && MISSING="$MISSING ANTHROPIC_SMALL_MODEL"
+      [ -z "$ANTHROPIC_MEDIUM_MODEL" ] && MISSING="$MISSING ANTHROPIC_MEDIUM_MODEL"
+      [ -z "$ANTHROPIC_LARGE_MODEL" ] && MISSING="$MISSING ANTHROPIC_LARGE_MODEL"
+      if [ -n "$MISSING" ]; then
+        echo "ERROR: Azure AI Foundry mode requires the following env vars in .env:$MISSING"
+        exit 1
+      fi
     elif [ "$CLAUDE_CODE_USE_VERTEX" = "1" ]; then
       # Vertex AI mode — validate required GCP credentials
       MISSING=""
@@ -187,6 +199,7 @@ cmd_start() {
       echo "ERROR: Set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in .env"
       echo "       (or use CLAUDE_CODE_USE_BEDROCK=1 for AWS Bedrock,"
       echo "        CLAUDE_CODE_USE_VERTEX=1 for Google Vertex AI,"
+      echo "        CLAUDE_CODE_USE_AZURE=1 for Azure AI Foundry,"
       echo "        or ROUTER=true with OPENAI_API_KEY or OPENROUTER_API_KEY)"
       exit 1
     fi
